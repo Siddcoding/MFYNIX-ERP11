@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Masters - Mfynix</title>
+<link rel="icon" type="image/png" href="img/favicon.png" />
+<link rel="stylesheet" href="css/style.css" />
+<style>
+  .fld-req > label::after { content:' *'; color:#1d4ed8; font-weight:700; }
+  .fld-error input, .fld-error select { border-color:var(--danger) !important; }
+  .fld-err-msg { color:var(--danger); font-size:.74rem; margin-top:3px; }
+  .fld-locked { font-size:.68rem; color:#b45309; margin-left:6px; }
+  .fld-approval { font-size:.68rem; color:#7c3aed; margin-left:6px; }
+  .fld-pending { font-size:.72rem; color:#7c3aed; margin-top:3px; }
+  .mc-readonly input, .mc-readonly select { background:var(--surface-2); color:var(--text-dim); cursor:not-allowed; }
+  .rec-toolbar { display:flex; gap:10px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:12px; }
+</style>
+</head>
+<body>
+<script src="js/common.js"></script>
+<script>Auth.requireLogin(); renderShell('masters');</script>
+
+<template id="tpl">
+  <div class="card">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;" id="masterTabs"></div>
+    <p class="muted" id="accessNote" style="margin:10px 0 0;"></p>
+  </div>
+  <div id="pane"></div>
+</template>
+
+<script>
+(async function () {
+  const content = document.getElementById('page-content');
+  content.appendChild(document.getElementById('tpl').content.cloneNode(true));
+  const user = Auth.getUser();
+
+  const MASTERS = [['customer', 'Customers'], ['vendor', 'Vendors'], ['material', 'Materials'], ['payment_terms', 'Payment terms']];
+  const LIST_COLS = {
+    customer: [['cust_code', 'Code'], ['cust_name', 'Name'], ['cust_type', 'Type'], ['bill_city', 'City'], ['bill_state', 'State']],
+    vendor: [['vend_code', 'Code'], ['vend_name', 'Name'], ['vend_type', 'Type'], ['state', 'State']],
+    material: [['mat_code', 'Code'], ['mat_name', 'Name'], ['mat_type', 'Type'], ['hsn_sac', 'HSN/SAC']],
+    payment_terms: [['pt_code', 'Code'], ['pt_desc', 'Description'], ['pt_net_days', 'Net days']]
+  };
+  const DRIVERS = ['cust_type', 'vend_type', 'portal_access', 'dunning_block', 'tds_section', 'msme', 'payment_block', 'tax_category', 'stock_tracked', 'tracking'];
+
+  let master = 'customer';
+  let myAccess = 'none';
+  let options = {};
+  let state = { mode: 'list', recordId: null, values: {}, layout: null };
+
+  const tabsEl = document.getElementById('masterTabs');
+  function renderTabs() {
+    tabsEl.innerHTML = MASTERS.map(([m, l]) => `<button class="btn ${m === master ? '' : 'secondary'}" data-m="${m}">${l}</button>`).join('');
+    tabsEl.querySelectorAll('[data-m]').forEach(b => b.addEventListener('click', () => { master = b.dataset.m; openMaster(); }));
+  }
+
+  async function openMaster() {
+    renderTabs();
+    state = { mode: 'list', recordId: null, values: {}, layout: null };
+    const masters = await api('/master-control/masters');
+    const mi = masters.find(x => x.master === master) || {};
+    myAccess = mi.myAccess || 'none';
+    document.getElementById('accessNote').textContent = `Your access to ${master.replace('_', ' ')}: ${myAccess.replace('_', ' ')}`;
+    if (myAccess === 'none') { document.getElementById('pane').innerHTML = '<div class="card"><p class="muted">Your role has no access to this master.</p></div>'; return; }
+    try { options = await api(`/master-control/${master}/options`); } catch (e) { options = {}; }
+    renderList();
+  }
+
+  // ---------- list ----------
+  async function renderList() {
+    const pane = document.getElementById('pane');
+    pane.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>';
+    let rows;
+    try { rows = await api(`/master-control/${master}/records`); } catch (e) { pane.innerHTML = `<div class="card"><p class="error-text">${esc(e.message)}</p></div>`; return; }
+    const cols = LIST_COLS[master];
+    const canCreate = myAccess === 'full';
+    const body = rows.length ? rows.map(r => `<tr>
+        ${cols.map(([f]) => `<td>${esc(r.values[f] || '')}</td>`).join('')}
+        <td><span class="badge ${r.status === 'Active' ? 'ok' : ''}">${esc(r.status)}</span>${r.used ? ' <span class="badge" title="In use on posted documents">used</span>' : ''}</td>
+        <td><button class="btn secondary" style="padding:4px 10px;" data-open="${r.recordId}">${myAccess === 'display' ? 'View' : 'Open'}</button></td>
+      </tr>`).join('') : `<tr><td colspan="${cols.length + 2}" class="muted">No records yet.</td></tr>`;
+    pane.innerHTML = `<div class="card">
+      <div class="rec-toolbar">
+        <h2 style="margin:0;">${esc(MASTERS.find(m => m[0] === master)[1])}</h2>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input id="recSearch" type="search" placeholder="Search…" style="min-width:200px;" />
+          ${canCreate ? `<button class="btn" id="newRec">+ New</button>` : ''}
+        </div>
+      </div>
+      <table><thead><tr>${cols.map(([, l]) => `<th>${l}</th>`).join('')}<th>Status</th><th></th></tr></thead><tbody id="recBody">${body}</tbody></table>
+    </div>`;
+    pane.querySelectorAll('[data-open]').forEach(b => b.addEventListener('click', () => openRecord(Number(b.dataset.open))));
+    if (canCreate) document.getElementById('newRec').addEventListener('click', () => openCreate());
+    const search = document.getElementById('recSearch');
+    search.addEventListener('input', () => {
+      const term = search.value.toLowerCase();
+      [...document.querySelectorAll('#recBody tr')].forEach(tr => { tr.style.display = tr.textContent.toLowerCase().includes(term) ? '' : 'none'; });
+    });
+  }
+
+  // ---------- create / edit ----------
+  async function openCreate() {
+    state = { mode: 'create', recordId: null, values: defaultsFromLayout(), layout: null };
+    await refreshLayout();
+    renderForm();
+  }
+  async function openRecord(recordId) {
+    const rec = await api(`/master-control/${master}/record/${recordId}`);
+    state = { mode: myAccess === 'display' ? 'display' : 'edit', recordId, values: rec.values || {}, used: rec.used, layout: null };
+    await refreshLayout();
+    renderForm();
+  }
+
+  function defaultsFromLayout() { return {}; }
+
+  async function refreshLayout() {
+    const mode = state.mode === 'display' ? 'display' : state.mode;
+    const params = { mode, used: state.used ? '1' : '0' };
+    // pass current driver values so conditionals resolve live
+    DRIVERS.forEach(d => { if (state.values[d] != null && state.values[d] !== '') params[d] = state.values[d]; });
+    if (state.recordId) params.recordId = state.recordId;
+    const qs = Object.entries(params).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+    state.layout = await api(`/master-control/${master}/${'layout'}?${qs}`);
+  }
+
+  function control(f) {
+    const v = state.values[f.id] == null ? (f.default || '') : state.values[f.id];
+    const ro = f.status === 'display_only';
+    const disAttr = ro ? 'disabled' : '';
+    const opts = options[f.id];
+    if (opts || f.type === 'List') {
+      const list = opts || [];
+      return `<select name="${f.id}" ${disAttr}><option value="">—</option>${list.map(o => `<option value="${esc(o.value)}" ${String(o.value) === String(v) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
+    }
+    if (f.type === 'Yes/No') {
+      return `<select name="${f.id}" ${disAttr}><option value="No" ${v === 'No' ? 'selected' : ''}>No</option><option value="Yes" ${v === 'Yes' ? 'selected' : ''}>Yes</option></select>`;
+    }
+    const t = /amount|number|quantity/i.test(f.type || '') ? 'number' : (f.type === 'Email' ? 'email' : (f.type === 'Date' ? 'date' : 'text'));
+    return `<input name="${f.id}" type="${t}" ${t === 'number' ? 'step="0.01"' : ''} value="${esc(v)}" ${disAttr} />`;
+  }
+
+  function renderForm() {
+    const pane = document.getElementById('pane');
+    const L = state.layout;
+    const title = state.mode === 'create' ? `New ${master.replace('_', ' ')}` : `${state.mode === 'display' ? 'View' : 'Edit'} ${master.replace('_', ' ')} #${state.recordId}`;
+    const activeTabs = L.tabs.filter(t => t.active && t.fields && t.fields.length);
+    const groups = activeTabs.map(t => `
+      <fieldset class="field-group"><legend>${esc(t.tab)}</legend>
+        <div class="form-grid">
+          ${t.fields.map(f => fieldBlock(f)).join('')}
+        </div>
+      </fieldset>`).join('');
+    pane.innerHTML = `<div class="card">
+      <div class="rec-toolbar"><h2 style="margin:0;">${esc(title)}</h2>
+        <button class="btn secondary" id="backList">← Back to list</button></div>
+      <form id="recForm">${groups}
+        <div id="formError" class="error-text" style="display:none;margin-top:10px;"></div>
+        ${state.mode !== 'display' ? `<button class="btn" type="submit" style="margin-top:14px;" id="saveBtn" data-loading-text="Saving…">${state.mode === 'create' ? 'Create' : 'Save changes'}</button>` : ''}
+      </form></div>`;
+    document.getElementById('backList').addEventListener('click', renderList);
+    // live conditional re-evaluation
+    pane.querySelectorAll('select[name], input[name]').forEach(inp => {
+      inp.addEventListener('change', async () => {
+        state.values[inp.name] = inp.type === 'checkbox' ? (inp.checked ? 'Yes' : 'No') : inp.value;
+        if (DRIVERS.includes(inp.name)) { collectInto(state.values); await refreshLayout(); renderForm(); }
+      });
+    });
+    const form = document.getElementById('recForm');
+    if (form && state.mode !== 'display') form.addEventListener('submit', onSave);
+  }
+
+  function fieldBlock(f) {
+    const req = f.status === 'mandatory';
+    const ro = f.status === 'display_only';
+    return `<div class="${req ? 'fld-req ' : ''}${ro ? 'mc-readonly ' : ''}" data-field="${f.id}">
+      <label>${esc(f.label)}${f.locked ? '<span class="fld-locked">🔒 locked</span>' : ''}${f.needsApproval ? '<span class="fld-approval" title="Change needs approval">✔ approval</span>' : ''}</label>
+      ${control(f)}
+      <div class="fld-err-msg" style="display:none;"></div>
+    </div>`;
+  }
+
+  function collectInto(target) {
+    const pane = document.getElementById('pane');
+    pane.querySelectorAll('[name]').forEach(inp => {
+      if (inp.disabled) return;                 // display-only/locked: never send
+      target[inp.name] = inp.value;
+    });
+    return target;
+  }
+
+  async function onSave(e) {
+    e.preventDefault();
+    const values = {};
+    collectInto(values);
+    // clear previous field errors
+    document.querySelectorAll('[data-field]').forEach(d => { d.classList.remove('fld-error'); const m = d.querySelector('.fld-err-msg'); if (m) m.style.display = 'none'; });
+    const errBox = document.getElementById('formError'); errBox.style.display = 'none';
+    const btn = document.getElementById('saveBtn');
+    const label = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving…';
+    try {
+      let res;
+      if (state.mode === 'create') res = await api(`/master-control/${master}/record`, { method: 'POST', body: { values } });
+      else res = await api(`/master-control/${master}/record/${state.recordId}`, { method: 'PUT', body: { values } });
+      const pend = (res.pending || []).filter(p => p.label);
+      if (pend.length) toast(`Saved. ${pend.length} change(s) sent for approval: ${pend.map(p => p.label).join(', ')}`, 'info', 5000);
+      else toast(state.mode === 'create' ? 'Created.' : 'Saved.', 'success');
+      renderList();
+    } catch (err) {
+      btn.disabled = false; btn.innerHTML = label;
+      const errors = (err.data && err.data.errors) || null;
+      if (errors) {
+        errors.forEach(er => {
+          if (!er.field) { errBox.textContent = er.message; errBox.style.display = 'block'; return; }
+          const d = document.querySelector(`[data-field="${er.field}"]`);
+          if (d) { d.classList.add('fld-error'); const m = d.querySelector('.fld-err-msg'); if (m) { m.textContent = er.message; m.style.display = 'block'; } }
+        });
+        toast(`${errors.length} field(s) need attention`, 'error');
+      } else { toast(err.message, 'error'); }
+    }
+  }
+
+  renderTabs();
+  await openMaster();
+  attachHoverEffects && attachHoverEffects();
+})();
+</script>
+</body>
+</html>

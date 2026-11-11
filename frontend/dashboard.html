@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dashboard - Mfynix</title>
+<link rel="icon" type="image/png" href="img/favicon.png" />
+<link rel="stylesheet" href="css/style.css" />
+<style>
+  /* ---- Dashboard-only polish (scoped; does not affect other pages) ---- */
+  .dash-hero {
+    display:flex; align-items:center; justify-content:space-between; gap:20px; flex-wrap:wrap;
+    padding:22px 26px; margin-bottom:22px; border-radius:var(--radius-lg);
+    background:
+      radial-gradient(1200px 200px at 0% 0%, rgba(91,141,239,0.16), transparent 60%),
+      linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+    border:1px solid var(--border-soft); box-shadow:var(--shadow-card);
+  }
+  .dash-hero .eyebrow { font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+  .dash-hero h1 { margin:4px 0 2px; font-size:1.55rem; font-weight:650; letter-spacing:-0.02em; color:var(--heading); }
+  .dash-hero .sub { color:var(--muted); font-size:.9rem; }
+  .dash-hero .date-chip {
+    text-align:right; padding:10px 16px; border-radius:var(--radius-md);
+    background:rgba(255,255,255,0.04); border:1px solid var(--border-soft);
+  }
+  .dash-hero .date-chip .big { font-size:1.35rem; font-weight:650; color:var(--heading); letter-spacing:-.01em; }
+  .dash-hero .date-chip .small { font-size:.76rem; color:var(--muted); }
+
+  .kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:16px; margin-bottom:22px; }
+  .kpi-card {
+    position:relative; overflow:hidden; padding:18px 18px 16px; border-radius:var(--radius-lg);
+    background:linear-gradient(160deg, rgba(255,255,255,0.055), rgba(255,255,255,0.02));
+    border:1px solid var(--border-soft); box-shadow:var(--shadow-card);
+    transition:transform .35s var(--ease), box-shadow .35s var(--ease), border-color .35s var(--ease);
+  }
+  .kpi-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; background:var(--accent, var(--primary)); opacity:.9; }
+  .kpi-card:hover { transform:translateY(-3px); box-shadow:var(--shadow-lift); border-color:var(--border); }
+  .kpi-card .khead { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .kpi-card .kicon {
+    width:38px; height:38px; border-radius:11px; display:grid; place-items:center;
+    background:var(--accent-soft, var(--primary-soft-bg)); color:var(--accent, var(--primary));
+  }
+  .kpi-card .kicon svg { width:19px; height:19px; stroke-width:2; }
+  .kpi-card .label { font-size:.74rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
+  .kpi-card .value { font-size:1.55rem; font-weight:680; color:var(--heading); letter-spacing:-0.02em; line-height:1.1; }
+  .kpi-card .ksub { font-size:.74rem; color:var(--muted-soft); margin-top:4px; }
+
+  .section-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin:0 0 14px; }
+  .section-head .eyebrow { font-size:.68rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted-soft); display:block; margin-bottom:2px; }
+  .section-head h2 { margin:0; font-size:1.05rem; font-weight:620; letter-spacing:-0.01em; }
+  .dash-grid { display:grid; grid-template-columns:1.5fr 1fr; gap:20px; }
+  @media (max-width:900px){ .dash-grid{ grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<script src="js/common.js"></script>
+<script src="js/vendor/chart.min.js"></script>
+<script>
+Auth.requireLogin();
+renderShell('dashboard');
+</script>
+
+<template id="tpl">
+  <div class="dash-hero">
+    <div>
+      <span class="eyebrow" id="heroGreeting">Welcome back</span>
+      <h1 id="heroName">Dashboard</h1>
+      <div class="sub" id="heroSub"></div>
+    </div>
+    <div class="date-chip">
+      <div class="big" id="heroDate"></div>
+      <div class="small" id="heroDay"></div>
+    </div>
+  </div>
+
+  <div id="branchFilterWrap" style="margin-bottom:16px;"></div>
+  <div class="kpi-grid" id="kpiGrid"></div>
+
+  <div class="card">
+    <div class="section-head"><div><span class="eyebrow">Performance</span><h2>Sales &amp; Purchase — last 14 days</h2></div></div>
+    <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+  </div>
+
+  <div class="dash-grid" id="flowRow">
+    <div class="card">
+      <div class="section-head"><div><span class="eyebrow">Working capital</span><h2>Purchase → Stock → Sales → GST</h2></div></div>
+      <div id="sankeyHolder"></div>
+    </div>
+    <div class="card">
+      <div class="section-head"><div><span class="eyebrow">Today</span><h2>Contribution</h2></div></div>
+      <div style="display:flex;justify-content:center;padding:8px 0;" id="radialHolder"></div>
+      <p class="muted" style="text-align:center;font-size:0.82rem;margin-top:6px;">Today's sales as a share of this month's total</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="section-head" id="perfTitle"><div><span class="eyebrow">By branch</span><h2>Branch performance — this month</h2></div></div>
+    <div id="branchPerfTable"></div>
+  </div>
+
+  <div class="dash-grid">
+    <div class="card">
+      <div class="section-head"><div><span class="eyebrow">Activity</span><h2>Recent transactions</h2></div></div>
+      <div id="recentTable"></div>
+    </div>
+    <div class="card">
+      <div class="section-head"><div><span class="eyebrow">Relationships</span><h2>Top customers</h2></div></div>
+      <div id="topCustomersTable"></div>
+    </div>
+  </div>
+</template>
+
+<script>
+(async function () {
+  const content = document.getElementById('page-content');
+  content.appendChild(document.getElementById('tpl').content.cloneNode(true));
+  const user = Auth.getUser();
+
+  // ---- Hero header: time-aware greeting + date ----
+  const now = new Date();
+  const hr = now.getHours();
+  const greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
+  document.getElementById('heroGreeting').textContent = greet;
+  document.getElementById('heroName').textContent = (user.fullName || user.userName || 'Welcome') + '';
+  document.getElementById('heroSub').textContent = `${user.companyName || ''}${user.branchName ? ' · ' + user.branchName : ''}`;
+  document.getElementById('heroDate').textContent = now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+  document.getElementById('heroDay').textContent = now.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric' });
+
+  // SVG icon set (inherits accent colour)
+  const ICONS = {
+    sales: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 17l6-6 4 4 8-8" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 7h7v7" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    month: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4" stroke-linecap="round"/></svg>',
+    purchase: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 6h15l-1.5 9h-12z" stroke-linejoin="round"/><circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M6 6L5 3H3" stroke-linecap="round"/></svg>',
+    stock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7l9-4 9 4-9 4-9-4z" stroke-linejoin="round"/><path d="M3 7v10l9 4 9-4V7" stroke-linejoin="round"/><path d="M12 11v10" /></svg>',
+    gst: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 7h6M9 12h6M9 17h3" stroke-linecap="round"/><rect x="5" y="3" width="14" height="18" rx="2"/></svg>'
+  };
+
+  if (window.innerWidth < 900) document.getElementById('flowRow').style.gridTemplateColumns = '1fr';
+
+  if (!user.branchId) {
+    const branches = await api('/branches');
+    const wrap = document.getElementById('branchFilterWrap');
+    const select = el(`
+      <select id="branchFilter" style="max-width:280px;">
+        <option value="">All Branches (Consolidated)</option>
+        ${branches.map(b => `<option value="${esc(b.BranchID)}">${esc(b.BranchName)} (${esc(b.BranchCode)})</option>`).join('')}
+      </select>`);
+    wrap.appendChild(select);
+    select.addEventListener('change', () => refreshAll(select.value || undefined));
+  }
+
+  async function loadKpis(branchId) {
+    const kpis = await api('/dashboard/kpis', { params: { branchId } });
+    const grid = document.getElementById('kpiGrid');
+    grid.innerHTML = '';
+    const cards = [
+      ["Today's Sales", kpis.todaySales, 'sales', '#34d399', 'rgba(52,211,153,0.14)', 'Billed today'],
+      ['Monthly Sales', kpis.monthlySales, 'month', '#5b8def', 'rgba(91,141,239,0.16)', 'This month to date'],
+      ["Today's Purchase", kpis.todayPurchase, 'purchase', '#a78bfa', 'rgba(167,139,250,0.16)', 'Booked today'],
+      ['Stock Value', kpis.stockValue, 'stock', '#f59e0b', 'rgba(245,158,11,0.15)', 'On hand, at cost'],
+      ['GST Payable (Net)', kpis.gstPayable, 'gst', '#f472b6', 'rgba(244,114,182,0.15)', 'Output − input'],
+    ];
+    cards.forEach(([label, value, icon, accent, soft, sub], i) => {
+      const card = el(`<div class="kpi-card" style="animation-delay:${i * 0.05}s;--accent:${accent};--accent-soft:${soft};">
+        <div class="khead"><div class="kicon">${ICONS[icon]}</div></div>
+        <div class="label">${label}</div>
+        <div class="value" data-target="${value}">₹0</div>
+        <div class="ksub">${sub}</div>
+      </div>`);
+      grid.appendChild(card);
+      animateCounter(card.querySelector('.value'), value, (v) => fmtMoney(v));
+    });
+    attachHoverEffects();
+
+    const pct = kpis.monthlySales > 0 ? Math.min(100, (kpis.todaySales / kpis.monthlySales) * 100) : 0;
+    const radialHolder = document.getElementById('radialHolder');
+    radialHolder.innerHTML = radialProgressSvg(pct, { size: 132, stroke: 11, label: 'of month' });
+    animateRadialProgress(radialHolder);
+
+    const sankeyHolder = document.getElementById('sankeyHolder');
+    sankeyHolder.innerHTML = miniSankeySvg({ purchase: kpis.monthlyPurchase, sales: kpis.monthlySales, gst: kpis.gstCollected });
+  }
+
+  let trendChartInstance = null;
+  async function loadTrend(branchId) {
+    const days = await api('/dashboard/trend', { params: { branchId } });
+    const ctx = document.getElementById('trendChart').getContext('2d');
+    const labels = days.map(d => new Date(d.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }));
+    const salesData = days.map(d => d.sales);
+    const purchaseData = days.map(d => d.purchase);
+    const salesGradient = ctx.createLinearGradient(0, 0, 0, 240);
+    salesGradient.addColorStop(0, 'rgba(91,141,239,0.34)'); salesGradient.addColorStop(1, 'rgba(91,141,239,0.02)');
+    const purchaseGradient = ctx.createLinearGradient(0, 0, 0, 240);
+    purchaseGradient.addColorStop(0, 'rgba(167,139,250,0.28)'); purchaseGradient.addColorStop(1, 'rgba(167,139,250,0.02)');
+    if (trendChartInstance) trendChartInstance.destroy();
+    trendChartInstance = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets: [
+        { label: 'Sales', data: salesData, borderColor: '#5b8def', backgroundColor: salesGradient, fill: true, tension: 0.4, pointRadius: 0, borderWidth: 2.5 },
+        { label: 'Purchase', data: purchaseData, borderColor: '#a78bfa', backgroundColor: purchaseGradient, fill: true, tension: 0.4, pointRadius: 0, borderWidth: 2.5 },
+      ] },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: { duration: 900, easing: 'easeOutCubic' },
+        plugins: { legend: { display: true, position: 'top', align: 'end', labels: { boxWidth: 10, usePointStyle: true, font: { size: 11 }, color: '#93a0b4' } } },
+        scales: {
+          x: { grid: { display: false }, ticks: { font: { size: 10 }, color: '#93a0b4' } },
+          y: { grid: { color: 'rgba(255,255,255,0.07)' }, ticks: { font: { size: 10 }, color: '#93a0b4', callback: (v) => '₹' + v.toLocaleString('en-IN') } }
+        },
+        interaction: { intersect: false, mode: 'index' }
+      }
+    });
+  }
+
+  async function loadBranchPerformance() {
+    const rows = await api('/dashboard/branch-performance');
+    const el2 = document.getElementById('branchPerfTable');
+    if (rows.length === 0) { el2.innerHTML = '<p class="muted">No data yet.</p>'; return; }
+    el2.innerHTML = `<table><thead><tr><th>Branch</th><th>Monthly Sales</th><th>Monthly Purchase</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td>${esc(r.BranchName)}</td><td>${fmtMoney(r.MonthlySales)}</td><td>${fmtMoney(r.MonthlyPurchase)}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  async function loadRecent(branchId) {
+    const rows = await api('/dashboard/recent-transactions', { params: { branchId } });
+    const target = document.getElementById('recentTable');
+    if (rows.length === 0) { target.innerHTML = '<p class="muted">No transactions yet.</p>'; return; }
+    target.innerHTML = `<table><thead><tr><th>Type</th><th>Ref No</th><th>Date</th><th>Amount</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td><span class="badge ${r.Type === 'Sale' ? 'ok' : 'warn'}">${esc(r.Type)}</span></td><td>${esc(r.RefNo)}</td><td>${fmtDate(r.Date)}</td><td>${fmtMoney(r.Amount)}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  async function loadTopCustomers(branchId) {
+    const rows = await api('/dashboard/top-customers', { params: { branchId } });
+    const target = document.getElementById('topCustomersTable');
+    if (rows.length === 0) { target.innerHTML = '<p class="muted">No sales yet.</p>'; return; }
+    target.innerHTML = `<table><thead><tr><th>Customer</th><th>Total Business</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td>${esc(r.CustomerName)}</td><td>${fmtMoney(r.Total)}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  async function refreshAll(branchId) {
+    await Promise.all([loadKpis(branchId), loadTrend(branchId), loadRecent(branchId), loadTopCustomers(branchId)]);
+  }
+
+  try {
+    await refreshAll(user.branchId || undefined);
+    if (!user.branchId) { document.getElementById('perfTitle').style.display = 'flex'; await loadBranchPerformance(); }
+    else { document.getElementById('perfTitle').parentElement.style.display = 'none'; }
+  } catch (e) {
+    content.innerHTML = `<p class="error-text">${esc(e.message)}</p>`;
+    toast(e.message, 'error');
+  }
+})();
+</script>
+</body>
+</html>

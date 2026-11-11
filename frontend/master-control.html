@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Master Data Control - Mfynix</title>
+<link rel="icon" type="image/png" href="img/favicon.png" />
+<link rel="stylesheet" href="css/style.css" />
+<style>
+  .mc-status { font-size:.72rem; padding:2px 7px; border-radius:10px; text-transform:capitalize; white-space:nowrap; }
+  .s-mandatory { background:#1e40af22; color:#1d4ed8; }
+  .s-optional  { background:#6b728022; color:#6b7280; }
+  .s-conditional { background:#92400e22; color:#b45309; }
+  .s-display_only, .s-visible { background:#05966922; color:#059669; }
+  .s-masked { background:#7c3aed22; color:#7c3aed; }
+  .s-hidden { background:#6b728018; color:#9ca3af; }
+  .mc-flags span { font-size:.68rem; margin-left:4px; opacity:.8; }
+  .tab-off { opacity:.5; }
+  .mc-tabrow { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px solid var(--border); }
+</style>
+</head>
+<body>
+<script src="js/common.js"></script>
+<script>Auth.requireLogin(); renderShell('master-control');</script>
+
+<template id="tpl">
+  <div class="card">
+    <h2 style="margin-top:0;">Master Data Control</h2>
+    <p class="muted" style="margin-top:-6px;">Configuration-driven field, tab and role controls for the customer, vendor, material and payment-terms masters. The same rules run on screen and on save.</p>
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;" id="tabBar"></div>
+  </div>
+  <div id="pane"></div>
+</template>
+
+<script>
+(async function () {
+  const content = document.getElementById('page-content');
+  content.appendChild(document.getElementById('tpl').content.cloneNode(true));
+  const user = Auth.getUser();
+  const isAdmin = ['Super Admin', 'Company Admin'].includes(user.role);
+
+  let cfg = null;
+  try { cfg = await api('/master-control/config'); }
+  catch (e) { document.getElementById('pane').innerHTML = `<div class="card"><p class="error-text">${esc(e.message)}</p></div>`; return; }
+
+  const TABS = ['Field layouts', 'Tabs on/off', 'Role access', 'Approvals'];
+  if (isAdmin) TABS.push('Import config');
+  let active = 'Field layouts';
+  buildTabBar(document.getElementById('tabBar'), TABS, active, (t) => { active = t; render(); });
+
+  const STATUS_LABEL = { mandatory: 'Mandatory', optional: 'Optional', conditional: 'Conditional', display_only: 'Display only', hidden: 'Hidden', visible: 'Visible', masked: 'Masked' };
+  function pill(s) { return `<span class="mc-status s-${esc(s)}">${esc(STATUS_LABEL[s] || s)}</span>`; }
+
+  function render() {
+    const pane = document.getElementById('pane');
+    if (active === 'Field layouts') return renderFields(pane);
+    if (active === 'Tabs on/off') return renderTabs(pane);
+    if (active === 'Role access') return renderRoles(pane);
+    if (active === 'Approvals') return renderApprovals(pane);
+    if (active === 'Import config') return renderImport(pane);
+  }
+
+  // ---- Field layouts: per master, the create/edit/display settings ----
+  let fMaster = 'customer';
+  function renderFields(pane) {
+    const masters = cfg.masters.map(m => `<button class="btn ${m === fMaster ? '' : 'secondary'}" data-fm="${m}">${esc(cfg.masterLabels[m])}</button>`).join('');
+    const fields = cfg.fields.filter(f => f.Master === fMaster);
+    const offTabs = new Set(cfg.tabs.filter(t => t.Master === fMaster && t.Status === 'Inactive').map(t => t.Tab));
+    let rows = '';
+    let lastTab = null;
+    fields.forEach(f => {
+      if (f.Tab !== lastTab) { lastTab = f.Tab; const off = offTabs.has(f.Tab); rows += `<tr><td colspan="6" style="background:var(--surface-2);font-weight:600;">${esc(f.Tab)}${off ? ' <span class="muted" style="font-weight:400;">(tab switched off)</span>' : ''}</td></tr>`; }
+      const off = offTabs.has(f.Tab);
+      rows += `<tr class="${off ? 'tab-off' : ''}">
+        <td>${esc(f.Label)}<div class="muted" style="font-size:.72rem;">${esc(f.FieldID)} · ${esc(f.FieldType || '')}</div></td>
+        <td>${pill(f.CreateStatus)}</td><td>${pill(f.EditStatus)}</td><td>${pill(f.DisplayStatus)}</td>
+        <td class="mc-flags">${f.LockAfterUse ? '<span title="Locks once the record is used">🔒 lock</span>' : ''}${f.NeedsApproval ? '<span title="Change needs approval">✔ approval</span>' : ''}</td>
+        <td class="muted" style="font-size:.74rem;">${esc(f.ValidationRule || '')}</td></tr>`;
+    });
+    pane.innerHTML = `
+      <div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">${masters}</div>
+        <table><thead><tr><th>Field</th><th>Create</th><th>Edit</th><th>Display</th><th>Flags</th><th>Validation</th></tr></thead><tbody>${rows}</tbody></table>
+      </div>`;
+    pane.querySelectorAll('[data-fm]').forEach(b => b.addEventListener('click', () => { fMaster = b.dataset.fm; renderFields(pane); }));
+  }
+
+  // ---- Tabs on/off ----
+  function renderTabs(pane) {
+    const byMaster = {};
+    cfg.tabs.forEach(t => { (byMaster[t.Master] = byMaster[t.Master] || []).push(t); });
+    let html = '';
+    cfg.masters.forEach(m => {
+      html += `<div class="card"><h3 style="margin-top:0;">${esc(cfg.masterLabels[m])}</h3>`;
+      (byMaster[m] || []).forEach(t => {
+        const core = !t.CanSwitchOff;
+        html += `<div class="mc-tabrow">
+          <div><strong>${esc(t.Tab)}</strong> ${core ? '<span class="badge">core</span>' : ''}
+            <div class="muted" style="font-size:.76rem;">${esc(t.Purpose || '')}${t.Status === 'Inactive' && t.EffectWhenOff ? ' — <em>' + esc(t.EffectWhenOff) + '</em>' : ''}</div></div>
+          <div>${core
+            ? '<span class="muted">always on</span>'
+            : (isAdmin
+                ? `<label class="switch-row"><input type="checkbox" data-tab="${esc(t.Tab)}" data-master="${esc(m)}" ${t.Status === 'Active' ? 'checked' : ''}/> <span>${t.Status === 'Active' ? 'On' : 'Off'}</span></label>`
+                : `<span class="badge ${t.Status === 'Active' ? 'ok' : ''}">${esc(t.Status)}</span>`)}</div>
+        </div>`;
+      });
+      html += `</div>`;
+    });
+    pane.innerHTML = html;
+    pane.querySelectorAll('[data-tab]').forEach(cb => cb.addEventListener('change', async () => {
+      const status = cb.checked ? 'Active' : 'Inactive';
+      try {
+        await api('/master-control/tab', { method: 'POST', body: { master: cb.dataset.master, tab: cb.dataset.tab, status } });
+        const row = cfg.tabs.find(t => t.Master === cb.dataset.master && t.Tab === cb.dataset.tab); if (row) row.Status = status;
+        toast(`${cb.dataset.tab} switched ${status === 'Active' ? 'on' : 'off'}`, 'success');
+        renderTabs(pane);
+      } catch (e) { toast(e.message, 'error'); cb.checked = !cb.checked; }
+    }));
+  }
+
+  // ---- Role access matrix ----
+  const LEVELS = [['full', 'Create, edit, display'], ['edit_display', 'Edit, display'], ['display', 'Display only'], ['none', 'No access']];
+  function renderRoles(pane) {
+    const get = (role, m) => (cfg.roleAccess.find(r => r.Role === role && r.Master === m) || {}).AccessLevel || 'none';
+    let head = '<tr><th>Role</th>' + cfg.masters.map(m => `<th>${esc(cfg.masterLabels[m])}</th>`).join('') + '</tr>';
+    let body = cfg.roles.map(role => {
+      return '<tr><td><strong>' + esc(role) + '</strong></td>' + cfg.masters.map(m => {
+        const lvl = get(role, m);
+        if (!isAdmin) return `<td>${pill(lvl === 'full' ? 'mandatory' : lvl === 'none' ? 'hidden' : 'display_only')}<span class="muted" style="font-size:.7rem;display:block;">${esc(lvl.replace('_', ' '))}</span></td>`;
+        return `<td><select data-role="${esc(role)}" data-master="${esc(m)}">${LEVELS.map(([v, l]) => `<option value="${v}" ${v === lvl ? 'selected' : ''}>${l}</option>`).join('')}</select></td>`;
+      }).join('') + '</tr>';
+    }).join('');
+    let sens = cfg.sensitive.map(g => `<tr><td>${esc(g.Label)}</td><td class="muted" style="font-size:.78rem;">${esc((JSON.parse(g.FieldIDs || '[]')).join(', '))}</td><td class="muted" style="font-size:.78rem;">${esc((JSON.parse(g.EditRoles || '[]')).join(', '))}</td><td class="muted" style="font-size:.78rem;">${g.FullViewRoles ? esc(JSON.parse(g.FullViewRoles).join(', ')) : 'All with access'}</td><td>${g.MaskedFormat ? esc(g.MaskedFormat) : '—'}</td></tr>`).join('');
+    pane.innerHTML = `
+      <div class="card"><h3 style="margin-top:0;">Access per role and master</h3>
+        <table><thead>${head}</thead><tbody>${body}</tbody></table>
+        ${isAdmin ? '<p class="muted" style="font-size:.78rem;margin-top:8px;">Changes save immediately and apply from the next screen load.</p>' : ''}
+      </div>
+      <div class="card"><h3 style="margin-top:0;">Sensitive field groups</h3>
+        <table><thead><tr><th>Group</th><th>Fields</th><th>Who can edit</th><th>Who sees in full</th><th>Mask</th></tr></thead><tbody>${sens}</tbody></table>
+      </div>`;
+    pane.querySelectorAll('select[data-role]').forEach(sel => sel.addEventListener('change', async () => {
+      try {
+        await api('/master-control/role-access', { method: 'PUT', body: { role: sel.dataset.role, master: sel.dataset.master, accessLevel: sel.value } });
+        const r = cfg.roleAccess.find(x => x.Role === sel.dataset.role && x.Master === sel.dataset.master); if (r) r.AccessLevel = sel.value;
+        toast('Access updated', 'success');
+      } catch (e) { toast(e.message, 'error'); }
+    }));
+  }
+
+  // ---- Approvals ----
+  async function renderApprovals(pane) {
+    pane.innerHTML = '<div class="card"><p class="muted">Loading…</p></div>';
+    let rows = [];
+    try { rows = await api('/master-control/pending?status=pending'); } catch (e) { pane.innerHTML = `<div class="card"><p class="error-text">${esc(e.message)}</p></div>`; return; }
+    const body = rows.length ? rows.map(r => `<tr>
+        <td>${esc(cfg.masterLabels[r.Master] || r.Master)} #${r.RecordID}</td>
+        <td>${esc(r.Label || r.FieldID)}</td>
+        <td class="muted">${esc(r.OldValue || '—')}</td>
+        <td><strong>${esc(r.NewValue || '—')}</strong></td>
+        <td>${esc(r.RequestedByName || '')}<div class="muted" style="font-size:.72rem;">${fmtDate(r.RequestedAt)}</div></td>
+        <td style="white-space:nowrap;">${isAdmin
+          ? `<button class="btn" style="padding:4px 10px;" data-ap="${r.ChangeID}">Approve</button> <button class="btn secondary" style="padding:4px 10px;" data-rj="${r.ChangeID}">Reject</button>`
+          : '<span class="muted">awaiting admin</span>'}</td>
+      </tr>`).join('') : '<tr><td colspan="6" class="muted">No changes waiting for approval.</td></tr>';
+    pane.innerHTML = `<div class="card"><h3 style="margin-top:0;">Pending master-data changes</h3>
+      <p class="muted" style="margin-top:-6px;">Approval fields (name, GSTIN, credit limit, bank details, status, and so on) are held here until an admin — other than the requester — accepts them.</p>
+      <table><thead><tr><th>Record</th><th>Field</th><th>Old</th><th>Proposed</th><th>Requested by</th><th></th></tr></thead><tbody>${body}</tbody></table></div>`;
+    pane.querySelectorAll('[data-ap]').forEach(b => b.addEventListener('click', () => decide(b.dataset.ap, 'approve')));
+    pane.querySelectorAll('[data-rj]').forEach(b => b.addEventListener('click', () => decide(b.dataset.rj, 'reject')));
+  }
+  async function decide(id, kind) {
+    try { await api(`/master-control/pending/${id}/${kind}`, { method: 'POST', body: {} }); toast(kind === 'approve' ? 'Approved' : 'Rejected', 'success'); renderApprovals(document.getElementById('pane')); }
+    catch (e) { toast(e.message, 'error'); }
+  }
+
+  // ---- Import config ----
+  function renderImport(pane) {
+    pane.innerHTML = `<div class="card">
+      <h3 style="margin-top:0;">Import configuration spreadsheet</h3>
+      <p class="muted">Upload an edited copy of <strong>Mfynix_Master_Data_Control.xlsx</strong>. It is checked for inconsistencies and you see a preview of what changes before anything is saved. The previous configuration is kept so it can be restored.</p>
+      <input type="file" id="cfgFile" accept=".xlsx" />
+      <div id="importOut" style="margin-top:12px;"></div>
+    </div>`;
+    document.getElementById('cfgFile').addEventListener('change', async (e) => {
+      const file = e.target.files[0]; if (!file) return;
+      const out = document.getElementById('importOut');
+      out.innerHTML = '<p class="muted">Reading…</p>';
+      const b64 = await fileToB64(file);
+      try {
+        const prev = await api('/master-control/import', { method: 'POST', body: { fileBase64: b64 } });
+        const list = (prev.changes || []).map(c => `<li><code>${esc(c.field)}</code> — ${esc(c.change)}</li>`).join('');
+        out.innerHTML = `<p>${esc(prev.message)} (${prev.rows} fields read).</p>${list ? `<ul>${list}</ul>` : ''}
+          <button class="btn" id="confirmImport">Apply this configuration</button>`;
+        document.getElementById('confirmImport').addEventListener('click', async () => {
+          try { const r = await api('/master-control/import', { method: 'POST', body: { fileBase64: b64, confirm: true } });
+            toast(`Configuration applied — ${r.updated} fields updated`, 'success');
+            cfg = await api('/master-control/config'); render();
+          } catch (e2) { toast(e2.message, 'error'); }
+        });
+      } catch (err) {
+        const probs = (err.data && err.data.problems) || [];
+        out.innerHTML = `<p class="error-text">${esc(err.message)}</p>` + (probs.length ? `<ul>${probs.map(p => `<li>${esc(p.master)}/${esc(p.field)}: ${esc(p.message)}</li>`).join('')}</ul>` : '');
+      }
+    });
+  }
+  function fileToB64(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(',')[1]);
+      r.onerror = reject; r.readAsDataURL(file);
+    });
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
